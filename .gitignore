@@ -3,6 +3,7 @@ __pycache__/
 .vscode/
 dataset/
 exper_info/
+_old-versions/
 temp/
 temp.*
 *.gdoc
