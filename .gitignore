@@ -4,6 +4,7 @@ __pycache__/
 dataset/
 exper_info/
 _old-versions/
+others/
 temp/
 temp.*
 *.gdoc

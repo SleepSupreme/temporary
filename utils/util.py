@@ -33,6 +33,26 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
+def shuffle_pix(tensor):
+    """Return a batch of new Tensors with shuffled pixels from `tensor`."""
+    assert tensor.ndim == 4, "Input tensor should be 4D!"
+    b, c, h, w = tensor.shape
+    
+    x = np.arange(h*w)
+    np.random.shuffle(x)
+    
+    shuf_tensor = copy.deepcopy(tensor).reshape(b, c, -1)
+    shuf_tensor[:, :, range(h*w)] = tensor.reshape(b, c, -1)[:, :, x]
+    
+    return shuf_tensor.reshape(b, c, h, w)
+
+
+def to_image(tensor):
+    """Convert a 3D `tensor` into numpy.array whose element type are uint8."""
+    assert tensor.ndim == 3, "Input tensor should be 3D!"
+    return tensor.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
+
+
 def md5(key: str) -> torch.Tensor:
     """Hash and binarize the `key` by MD5 algorithm."""
     hash_key = hashlib.md5(key.encode(encoding='UTF-8')).digest()
@@ -277,12 +297,12 @@ def SSIM(batch_image0, batch_image1):
     return SUM / b
 
 
-def create_dirs():
+def create_dirs(test=opt.test):
     """Create `checkpoints_save_dir`, `train_pics_save_dir`, `val_pics_save_dir` in training mode.
     Create `test_pics_save_dir` in test mode.
     """
     try:
-        if not opt.test:
+        if not test:
             if not os.path.exists(opt.checkpoints_save_dir):
                 os.makedirs(opt.checkpoints_save_dir)
             if not os.path.exists(opt.train_pics_save_dir):

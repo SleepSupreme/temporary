@@ -6,7 +6,7 @@ from utils.options import opt
 from .image_folder import ImageFolder
 
 
-def make_loaders():
+def get_loaders(test=opt.test):
     """Return `(train_loader_cover, train_loader_secret), (val_loader_cover, val_loader_secret)` in training mode.
     Return `(test_loader_cover, test_loader_secret)` in test mode.
     """
@@ -35,7 +35,7 @@ def make_loaders():
     else:
         transform_secret = transform_gray
 
-    if not opt.test:
+    if not test:
         # train
         train_dataset_cover = ImageFolder(train_dir, opt.dataset_size_train, transform_cover)
         train_dataset_secret = ImageFolder(train_dir, opt.dataset_size_train, transform_secret)

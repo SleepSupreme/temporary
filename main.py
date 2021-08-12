@@ -1,12 +1,11 @@
 import torch
 from torch import nn, optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.backends import cudnn
 
 from utils.options import opt, device
 from utils.util import create_dirs, print_network
-from data.load_data import make_loaders
-from models.utils import load_nets, load_checkpoints, train, inference
+from data.load_data import get_loaders
+from models.tools import get_nets, get_scheduler, load_checkpoints, train, inference
 
 
 def main():
@@ -23,21 +22,21 @@ def main():
     print("Making data loaders...")
     if not opt.test:
         (train_loader_cover, train_loader_secret),\
-            (val_loader_cover, val_loader_secret) = make_loaders()
+            (val_loader_cover, val_loader_secret) = get_loaders()
     else:
-        (test_loader_cover, test_loader_secret) = make_loaders()
+        (test_loader_cover, test_loader_secret) = get_loaders()
 
     print("Constructing nets...")
-    Hnet, Rnet, Enet = load_nets()
+    Hnet, Rnet, Enet = get_nets()
 
     if opt.load_checkpoint:
         print("Loading checkpoints for nets...")
-        load_checkpoints(Hnet, Rnet, Enet)
+        Hnet, Rnet, Enet = load_checkpoints(Hnet, Rnet, Enet)
 
     if opt.loss == 'l1':
-        criterion = nn.L1Loss().cuda()
+        criterion = nn.L1Loss().to(device)
     if opt.loss == 'l2':
-        criterion = nn.MSELoss().cuda()
+        criterion = nn.MSELoss().to(device)
 
     if not opt.test:
         print_network(Hnet)
@@ -47,7 +46,7 @@ def main():
             print_network(Enet)
             params += list(Enet.parameters())
         optimizer = optim.Adam(params, lr=opt.lr, betas=(0.5, 0.999))
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5, verbose=True)
+        scheduler = get_scheduler(optimizer)
 
         print("Begining training...")
         train(
@@ -61,7 +60,7 @@ def main():
         inference(
             test_loader_cover, test_loader_secret,
             Hnet, Rnet, Enet, criterion,
-            save_num=1, mode='test', epoch=None
+            save_num=5, mode='test', epoch=None
         )
 
 
