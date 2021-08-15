@@ -29,9 +29,15 @@ def main():
     print("Constructing nets...")
     Hnet, Rnet, Enet = get_nets()
 
+    params = list(Hnet.parameters()) + list (Rnet.parameters())
+    if opt.redundance != -1:
+        params += list(Enet.parameters())
+    optimizer = optim.Adam(params, lr=opt.lr, betas=(0.5, 0.999))
+    scheduler = get_scheduler(optimizer)
+
     if opt.load_checkpoint:
-        print("Loading checkpoints for nets...")
-        Hnet, Rnet, Enet = load_checkpoints(Hnet, Rnet, Enet)
+        print("Loading checkpoints...")
+        Hnet, Rnet, Enet, optimizer, scheduler = load_checkpoints(Hnet, Rnet, Enet, optimizer, scheduler)
 
     if opt.loss == 'l1':
         criterion = nn.L1Loss().to(device)
@@ -41,14 +47,9 @@ def main():
     if not opt.test:
         print_network(Hnet)
         print_network(Rnet)
-        params = list(Hnet.parameters()) + list (Rnet.parameters())
         if opt.redundance != -1:
             print_network(Enet)
-            params += list(Enet.parameters())
-        optimizer = optim.Adam(params, lr=opt.lr, betas=(0.5, 0.999))
-        scheduler = get_scheduler(optimizer)
 
-        print("Begining training...")
         train(
             train_loader_cover, train_loader_secret,
             val_loader_cover, val_loader_secret,
@@ -56,7 +57,6 @@ def main():
             optimizer, scheduler
         )
     else:
-        print("Begining test...")
         inference(
             test_loader_cover, test_loader_secret,
             Hnet, Rnet, Enet, criterion,

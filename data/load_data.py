@@ -89,7 +89,7 @@ def get_loaders(test=opt.test):
         test_loader_secret = DataLoader(
             test_dataset_secret,
             batch_size=opt.batch_size*opt.num_secrets,
-            shuffle=False,  # do not shuffle secret image when in test mode
+            shuffle=True,
             num_workers=opt.workers
         )
         return (test_loader_cover, test_loader_secret)

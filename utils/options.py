@@ -28,14 +28,13 @@ parser.add_argument('--loss_save_path', type=str, default='', help='path of savi
 
 # saving frequence parameters
 parser.add_argument('--log_freq', type=int, default=10, help='frequency of saving log information')
-parser.add_argument('--result_pic_freq', type=int, default=100, help='frequency of saving result pictures in the first epoch')
-
+parser.add_argument('--result_pic_freq', type=int, default=200, help='frequency of saving result pictures in the first epoch')
 
 # dataset parameters
 parser.add_argument('--image_size', type=int, default=128, help='size of images')
-parser.add_argument('--dataset_size_train', type=int, default=32000, help='size of training dataset')
-parser.add_argument('--dataset_size_val', type=int, default=640, help='size of training dataset')
-parser.add_argument('--dataset_size_test', type=int, default=1280, help='size of training dataset')
+parser.add_argument('--dataset_size_train', type=int, default=25000, help='size of training dataset')
+parser.add_argument('--dataset_size_val', type=int, default=500, help='size of training dataset')
+parser.add_argument('--dataset_size_test', type=int, default=1000, help='size of training dataset')
 parser.add_argument('--dataset_dir', type=str, default='', help='dir of dataset')
 
 # model parameters
@@ -50,15 +49,15 @@ parser.add_argument('--loss', type=str, default='l2', help='loss function [l1 | 
 parser.add_argument('--num_secrets', type=int, default=1, help='the number of secret images to be hidden')
 
 # training parameters
-parser.add_argument('--epochs', type=int, default=70, help='epochs for training')
-parser.add_argument('--start_epoch', type=int, default=0, help='the start epoch to continue training')
-parser.add_argument('--batch_size', type=int, default=32, help='batch size')
+parser.add_argument('--epochs', type=int, default=80, help='epochs for training')
+parser.add_argument('--batch_size', type=int, default=25, help='batch size')
 parser.add_argument('--beta', type=float, default=0.75, help='weight of true reveal')
 parser.add_argument('--gamma', type=float, default=0.5, help='weight of fake reveal')
 parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
 parser.add_argument('--lr_policy', type=str, default='step', help='learning rate policy [step | linear | plateau | cosine]')
 parser.add_argument('--lr_decay_freq', type=int, default=30, help='frequency of decaying lr in `step` mode')
 parser.add_argument('--decay_num', type=int, default=2, help='decay number for lr in `step` mode')
+parser.add_argument('--shuffle_secret', action='store_true', help='hide nosie image as secret in training')
 
 # test parameters
 parser.add_argument('--test', action='store_true', help='test mode')
@@ -69,7 +68,7 @@ parser.add_argument('--checkpoint_path', type=str, default='', help='path of one
 # key parameters
 parser.add_argument('--redundance', type=int, default=-1, help='redundance size of key; e.g. `32` for mapping it to a 3*32*32 tensor; `-1` for simple duplication')
 parser.add_argument('--generation_type', type=str, default='random_generation', help='generation type of a fake key [random | gradual | custom | ELSE (e.g. random_generation)]')
-parser.add_argument('--modified_bits', type=str, default=0, help='number of modified bits for test')
+parser.add_argument('--modified_bits', type=int, default=0, help='number of modified bits for test')
 parser.add_argument('--key', type=str, default='', help='true key')
 parser.add_argument('--fake_key', type=str, default='', help='fake key')
 
@@ -88,6 +87,7 @@ assert (_r == -1) or (_r % 2 == 0 and _r >= 8), "Unexpected redundance size!"
 if opt.test:
     opt.load_checkpoint = True
     assert opt.load_checkpoint, "Test mode must load the checkpoint file!"
+    opt.generation_type = 'random_generation'
 
 if opt.generation_type == 'custom':
     assert opt.fake_key != '', "A custom fake key should be given with the custom generation type!"

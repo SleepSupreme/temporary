@@ -48,14 +48,16 @@ def get_nets(cover_dependent=opt.cover_dependent, without_key=opt.without_key):
     return Hnet, Rnet, Enet
 
 
-def load_checkpoints(Hnet, Rnet, Enet, checkpoint_path=opt.checkpoint_path):
-    """Load checkpoints for `Hnet`, `Rnet` and `Enet` from `checkpoint_path`."""
+def load_checkpoints(Hnet, Rnet, Enet, optimizer, scheduler, checkpoint_path=opt.checkpoint_path):
+    """Load checkpoints for `Hnet`, `Rnet`, `Enet`, `optimizer` and `scheduler` from `checkpoint_path`."""
     checkpoint = torch.load(checkpoint_path)
     Hnet.load_state_dict(checkpoint['H_state_dict'])
     Rnet.load_state_dict(checkpoint['R_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
     if opt.redundance != -1:
         Enet.load_state_dict(checkpoint['E_state_dict'])
-    return Hnet, Rnet, Enet
+    return Hnet, Rnet, Enet, optimizer, scheduler
 
 
 def get_scheduler(optimizer):
@@ -135,13 +137,8 @@ def forward_pass(cover, secret, Hnet, Rnet, Enet, criterion,
             num = np.random.randint(1, 129)
             fake_key = modify_key(key_list[0], num)
         elif generation_type == 'gradual':
-            RANGE, low, high = [128,64,32,16,8,4,1], None, None
-            assert opt.num_secrets == 1 and epoch is not None
-            if epoch <= (len(RANGE)-1)*10:
-                low, high = RANGE[epoch//10 + 1], RANGE[epoch//10]
-            else:
-                low, high = RANGE[-1], RANGE[-2]
-            num = np.random.randint(low, high)
+            RANGE = [128,96,80,64,48,32,16,8]
+            num = RANGE[epoch//10]
             fake_key = modify_key(key_list[0], num)
         elif generation_type == 'custom':
             fake_key = md5(fake_key)
@@ -244,11 +241,14 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
     batch_size = opt.batch_size
     iters_per_epoch = opt.dataset_size_train // opt.batch_size
     print("######## TRAIN BEGIN ########")
-    
-    for epoch in range(opt.start_epoch, opt.epochs):
-        if opt.start_epoch != 0:
-            assert opt.load_checkpoint, "Load checkpoint to continue training!"
-        
+
+    if opt.load_checkpoint:
+        checkpoint = torch.load(opt.checkpoint_path)
+        start_epoch = checkpoint['epoch']
+    else:
+        start_epoch = 0
+
+    for epoch in range(start_epoch, opt.epochs):
         # ATTENTION: must zip loaders in epoch's iter
         train_loader = zip(train_loader_cover, train_loader_secret)
         val_loader = zip(val_loader_cover, val_loader_secret)
@@ -270,6 +270,9 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
         # go through the training dataset
         for i, (cover, secret) in enumerate(train_loader, start=1):
             data_time.update(time.time() - start_time)
+
+            if opt.shuffle_secret:
+                secret = shuffle_pix(secret)
 
             cover, container, secret_list, rev_secret_list, rev_secret_,\
                 H_loss, R_loss, R_loss_, H_diff, R_diff, R_diff_, count_diff\
@@ -348,7 +351,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
         min_loss = min(min_loss, val_Sum_loss)
 
         state = 'best' if is_best else 'newest'
-        print_log("Save the %s checkpoint: epoch%03d" % (state, epoch))
+        print_log("Save the %s checkpoint: epoch%03d\n" % (state, epoch))
         if opt.redundance != -1:  # save Enet
             save_checkpoint(
                 {
@@ -356,7 +359,8 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
                     'H_state_dict': Hnet.state_dict(),
                     'R_state_dict': Rnet.state_dict(),
                     'E_state_dict': Enet.state_dict(),
-                    'optimizer': optimizer.state_dict()
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict()
                 }, is_best=is_best
             )
         else:  # not save Enet
@@ -365,10 +369,11 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
                     'epoch': epoch,
                     'H_state_dict': Hnet.state_dict(),
                     'R_state_dict': Rnet.state_dict(),
-                    'optimizer': optimizer.state_dict()
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict()
                 }, is_best=is_best
             )
-        print("######## TRAIN END ########")
+    print("######## TRAIN END ########")
 
 
 def inference(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion,\
@@ -409,6 +414,9 @@ def inference(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion
 
     data_loader = zip(data_loader_cover, data_loader_secret)
     for i, (cover, secret) in enumerate(data_loader, start=1):
+        if opt.shuffle_secret:
+            secret = shuffle_pix(secret)
+
         cover, container, secret_list, rev_secret_list, rev_secret_,\
             H_loss, R_loss, R_loss_, H_diff, R_diff, R_diff_, count_diff\
                 = forward_pass(cover, secret, Hnet, Rnet, Enet, criterion, epoch=epoch)
@@ -431,7 +439,7 @@ def inference(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion
                     batch_size, cover, container,
                     secret_list, rev_secret_list, rev_secret_,
                     epoch=None, i=i,
-                    save_path=opt.test_pics_save_dir
+                    save_path=opt.test_pics_save_dir, diff_bits=opt.modified_bits
                 )
             else:
                 save_result_pic(
@@ -464,9 +472,9 @@ def inference(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion
 
     if mode == 'test':
         if modified_bits != 0:
-            log = "Modified_bits: %d" % modified_bits
+            log = "%s Modified_bits: %d\n" % (opt.checkpoint_type, modified_bits)
         else:
-            log = ""
+            log = "%s\n" % opt.checkpoint_type
         log  += "H_APD=%.4f H_PSNR=%.4f H_SSIM=%.4f H_LPIPS=%.4f R_APD=%.4f R_PSNR=%.4f R_SSIM=%.4f R_LPIPS=%.4f R_APD_=%.4f Diff_bits=%03d" % (
             H_diffs.avg, H_PSNRs.avg, H_SSIMs.avg, H_LPIPS.avg,
             R_diffs.avg, R_PSNRs.avg, R_SSIMs.avg, R_LPIPS.avg,

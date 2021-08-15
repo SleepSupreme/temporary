@@ -1,6 +1,5 @@
 import os
 import time
-import copy
 import random
 import hashlib
 from PIL import Image
@@ -33,18 +32,59 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def shuffle_pix(tensor):
-    """Return a batch of new Tensors with shuffled pixels from `tensor`."""
+def identity(x):
+    """Return an identical variable as `x`."""
+    return x
+
+
+def shuffle_pix(tensor, N=1):
+    """Shuffle a batch `tensor` in `N`x`N` pixel pieces."""
     assert tensor.ndim == 4, "Input tensor should be 4D!"
+    assert opt.image_size%N == 0, "Can't separate images properly!"
     b, c, h, w = tensor.shape
-    
-    x = np.arange(h*w)
-    np.random.shuffle(x)
-    
-    shuf_tensor = copy.deepcopy(tensor).reshape(b, c, -1)
-    shuf_tensor[:, :, range(h*w)] = tensor.reshape(b, c, -1)[:, :, x]
-    
-    return shuf_tensor.reshape(b, c, h, w)
+    num = opt.image_size//N
+
+    np.random.seed(0)
+    arange = np.arange(num**2)
+    np.random.shuffle(arange)
+
+    if N != 1:
+        shuf_tensor = torch.zeros(tensor.shape)
+        for i in range(num):
+            for j in range(num):
+                idx = arange[i*num + j]
+                I, J = idx//num, idx%num
+                shuf_tensor[:,:,i*N:(i+1)*N,j*N:(j+1)*N] = tensor[:,:,I*N:(I+1)*N,J*N:(J+1)*N]
+        return shuf_tensor
+    else:  # more efficient for N=1 version
+        shuf_tensor = tensor.detach().clone().reshape(b, c, -1)
+        shuf_tensor[:, :, range(h*w)] = tensor.reshape(b, c, -1)[:, :, arange]
+        return shuf_tensor.reshape(b, c, h, w).to(device)
+
+
+def recover_pix(tensor, N=1):
+    """Recover a shuffled batch `tensor` in `N`x`N` pieces."""
+    assert tensor.ndim == 4, "Input tensor should be 4D!"
+    assert opt.image_size%N == 0, "Can't separate images properly!"
+    b, c, h, w = tensor.shape
+    num = opt.image_size//N
+
+    np.random.seed(0)
+    arange = np.arange(num**2)
+    np.random.shuffle(arange)
+
+    if N != 1:
+        cover_tensor = torch.zeros(tensor.shape)
+        for i in range(num):
+            for j in range(num):
+                idx = arange[i*num + j]
+                I, J = idx//num, idx%num
+                cover_tensor[:,:,I*N:(I+1)*N,J*N:(J+1)*N] = tensor[:,:,i*N:(i+1)*N,j*N:(j+1)*N]
+        return cover_tensor
+    else:  # more efficient for N=1 version
+        cover_tensor = tensor.detach().clone().reshape(b, c, -1)
+        cover_tensor[:, :, arange] = tensor.reshape(b, c, -1)[:, :, range(h*w)]
+        return cover_tensor.reshape(b, c, h, w).to(device)
 
 
 def to_image(tensor):
@@ -68,7 +108,7 @@ def random_key(length: int) -> torch.Tensor:
 
 def modify_key(key: torch.Tensor, num: int) -> torch.Tensor:
     """Flip `num` bits in `key` randomly and return a modified key."""
-    fake_key = copy.deepcopy(key)
+    fake_key = key.detach().clone()
     indices = random.sample(range(len(key)), num)
     fake_key[indices] = -key[indices] + 1  # 0/1 flip
     return fake_key
@@ -190,7 +230,7 @@ def save_image(input_image, image_path, save_all=False, start=0):
             image_pil.save(image_path + '/%d.png' % (i+start))
 
 
-def save_result_pic(batch_size, cover, container, secret_list, rev_secret_list, rev_secret_, epoch, i, save_path):
+def save_result_pic(batch_size, cover, container, secret_list, rev_secret_list, rev_secret_, epoch, i, save_path, diff_bits=0):
     """Save a batch of result pictures.
     
     Parameters:
@@ -203,12 +243,13 @@ def save_result_pic(batch_size, cover, container, secret_list, rev_secret_list, 
         epoch (int/None)          -- epoch number in training stage or None in val or test
         i (int)                   -- iteration number
         save_path (str)           -- path to save the result picture
+        diff_bits (int)           -- different bits from the true one in the given key
     """
     if not os.path.exists(save_path):
         os.makedirs(save_path)
     
     if epoch is None:
-        result_name = '%s/result_pic_batch%04d.png' % (save_path, i)
+        result_name = '%s/result_pic_batch%04d_%s_%03d.png' % (save_path, i, opt.checkpoint_type, diff_bits)
     else:
         result_name = '%s/result_pic_epoch%03d_batch%04d.png' % (save_path, epoch, i)
 
@@ -218,13 +259,18 @@ def save_result_pic(batch_size, cover, container, secret_list, rev_secret_list, 
     if cover_gap.shape[1] == 1:  # gray
         show_cover = show_cover.repeat(1, 3, 1, 1)
 
-    secret_gap_0 = rev_secret_list[0] - secret_list[0]
+    if opt.shuffle_secret:
+        preprocess = recover_pix
+    else:
+        preprocess = identity
+
+    secret_gap_0 = preprocess(rev_secret_list[0]) - preprocess(secret_list[0])
     secret_gap_set = [(secret_gap_0*10 + 0.5).clamp_(0.0, 1.0)]
-    show_secret = torch.cat((secret_list[0], rev_secret_list[0], secret_gap_set[0]), dim=0)
+    show_secret = torch.cat((preprocess(secret_list[0]), preprocess(rev_secret_list[0]), secret_gap_set[0]), dim=0)
     for i in range(1, opt.num_secrets):
-        secret_gap_i = rev_secret_list[i] - secret_list[i]
+        secret_gap_i = preprocess(rev_secret_list[i]) - preprocess(secret_list[i])
         secret_gap_set.append((secret_gap_i*10 + 0.5).clamp_(0.0, 1.0))
-        show_secret = torch.cat((show_secret, secret_list[i], rev_secret_list[i], secret_gap_set[i]), dim=0)
+        show_secret = torch.cat((show_secret, preprocess(secret_list[i]), preprocess(rev_secret_list[i]), secret_gap_set[i]), dim=0)
     if secret_gap_0.shape[1] == 1:  # gray
         show_secret = show_secret.repeat(1, 3, 1, 1)
     
