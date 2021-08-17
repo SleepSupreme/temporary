@@ -337,7 +337,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
         save_loss_pic(h_loss_list, r_loss_list, r_loss_list_)
 
         val_Sum_loss, val_H_loss, val_R_loss, val_R_loss_, val_H_diff, val_R_diff, val_R_diff_\
-            = inference(val_loader_cover, val_loader_secret,
+            = test(val_loader_cover, val_loader_secret,
                 Hnet, Rnet, Enet, criterion,
                 save_num=1, mode='val', epoch=epoch
         )
@@ -376,7 +376,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
     print("######## TRAIN END ########")
 
 
-def inference(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion,\
+def test(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion,\
                 save_num=1, mode='test', epoch=None, modified_bits=opt.modified_bits):
     """Validate or test the performance of Hnet and Rnet.
 
@@ -388,7 +388,7 @@ def inference(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion
         Enet (Module)                   -- encoding network
         criterion (Loss)                -- loss function
         save_num (int)                  -- numbers of saved images
-        mode (str)                      -- mode of inference [val | test]
+        mode (str)                      -- mode of this function [val | test]
         epoch (int/None)                -- epoch number
         modidied_bits (int)             -- numbers of modified bits on the true key
     """
@@ -402,7 +402,7 @@ def inference(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion
 
     print("\n#### %s begin ####" % mode)
     
-    # inference info
+    # val/test info
     H_losses, R_losses, R_losses_ = AverageMeter(), AverageMeter(), AverageMeter()
     Sum_losses = AverageMeter()
     H_diffs, R_diffs, R_diffs_ = AverageMeter(), AverageMeter(), AverageMeter()

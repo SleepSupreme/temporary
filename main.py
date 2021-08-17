@@ -5,7 +5,7 @@ from torch.backends import cudnn
 from utils.options import opt, device
 from utils.util import create_dirs, print_network
 from data.load_data import get_loaders
-from models.tools import get_nets, get_scheduler, load_checkpoints, train, inference
+from models.tools import get_nets, get_scheduler, load_checkpoints, train, test
 
 
 def main():
@@ -57,7 +57,7 @@ def main():
             optimizer, scheduler
         )
     else:
-        inference(
+        test(
             test_loader_cover, test_loader_secret,
             Hnet, Rnet, Enet, criterion,
             save_num=5, mode='test', epoch=None
