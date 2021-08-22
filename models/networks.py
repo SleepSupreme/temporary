@@ -2,13 +2,7 @@ import functools
 import torch
 from torch import nn
 
-
-class Identity(nn.Module):
-    def __init__(self):
-        super(Identity, self).__init__()
-    
-    def forward(self, x):
-        return x
+from utils.util import *
 
 
 def get_norm_layer(norm_type='batch'):
@@ -26,15 +20,40 @@ def get_norm_layer(norm_type='batch'):
     elif norm_type == 'none':
         def norm_layer(x): return Identity()
     else:
-        raise NotImplementedError('normalization layer [%s] is not found' % norm_type)
+        raise NotImplementedError('Normalization layer [%s] is not found!' % norm_type)
     return norm_layer
 
 
-class UnetGenerator(nn.Module):
-    """Create a Unet-based hiding network."""
-    def __init__(self, input_nc, output_nc, num_downs=5, nhf=64, norm_type='batch', use_dropout=False, output_function='tanh'):
-        """Construct a Unet generator.
+def cat_zeros(X: torch.Tensor, input_nc: int):
+    """Catenate `X` with a zero tensor to make its channel number equal to `input_nc`."""
+    b, c, h, w = X.shape
+    assert c <= input_nc, "The channel number of X (%d) is too large!" % c
+    if c < input_nc:
+        zeros = torch.zeros((b,input_nc-c,h,w)).to(X.device)
+        X = torch.cat((X,zeros), dim=1)
+    return X
 
+
+def make_layers(block, num):
+    """Make layers by repeating `block` `num` times."""
+    layers = []
+    for _ in range(num):
+        layers.append(block)
+    return nn.Sequential(*layers)
+
+
+class Identity(nn.Module):
+    def __init__(self):
+        super(Identity, self).__init__()
+    
+    def forward(self, x):
+        return x
+
+
+class Unet(nn.Module):
+    """Create a U-Net."""
+    def __init__(self, input_nc, output_nc, num_downs=5, nhf=64, norm_type='batch', use_dropout=False, output_function='tanh'):
+        """
         Parameters:
             input_nc (int)        -- the number of channels in input images
             output_nc (int)       -- the number of channels in output images
@@ -45,10 +64,10 @@ class UnetGenerator(nn.Module):
             use_dropout (bool)    -- if use dropout layers
             output_function (str) -- activation function for the outmost layer [sigmoid | tanh]
 
-        We construct the U-Net from the innermost layer to the outermost layer.
-        It is a recursive process.
+        We construct the U-Net from the innermost layer to the outermost layer, which is a recursive process.
         """
-        super(UnetGenerator, self).__init__()
+        super(Unet, self).__init__()
+        self.input_nc = input_nc
         norm_layer = get_norm_layer(norm_type)
 
         # construct u-net strcture (from inner to outer)
@@ -68,17 +87,17 @@ class UnetGenerator(nn.Module):
         elif output_function == 'sigmoid':
             self.factor = 1.0
         else:
-            raise NotImplementedError('activation funciton [%s] is not found' % output_function)
+            raise NotImplementedError('Activation funciton [%s] is not found!' % output_function)
 
     def forward(self, X):
+        X = cat_zeros(X, self.input_nc)
         return self.factor * self.model(X)
 
 
 class UnetSkipConnectionBlock(nn.Module):
-    """Define the Unet submodule with skip connection."""
+    """Define the U-Net submodule with skip connection."""
     def __init__(self, outer_nc, inner_nc, input_nc=None, submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False, output_function='tanh'):
-        """Construct a Unet submodule with skip connection.
-        
+        """
         Parameters:
             outer_nc (int)        -- the number of filters in the outer conv layer
             inner_nc (int)        -- the number of filters in the inner conv layer
@@ -119,7 +138,7 @@ class UnetSkipConnectionBlock(nn.Module):
             elif output_function == 'sigmoid':
                 up = [uprelu, upconv, nn.Sigmoid()]
             else:
-                raise NotImplementedError('activation funciton [%s] is not found' % output_function)
+                raise NotImplementedError('Activation funciton [%s] is not found!' % output_function)
             model = down + [submodule] + up
         elif innermost:
             # no dropout; no norm in down
@@ -145,11 +164,10 @@ class UnetSkipConnectionBlock(nn.Module):
             return torch.cat((x, self.model(x)), dim=1)  # cat by channel
 
 
-class RevealNet(nn.Module):
-    """Create a CNN-based reveal network."""
+class VanillaCNN(nn.Module):
+    """Create a vanilla CNN."""
     def __init__(self, input_nc, output_nc, nrf=64, norm_type='batch', output_function='sigmoid'):
-        """Construct a reveal network.
-        
+        """
         Parameters:
             input_nc (int)        -- the number of channels in the input images
             output_nc (int)       -- the number of channels in the output images
@@ -157,8 +175,8 @@ class RevealNet(nn.Module):
             norm_type (str)       -- normalization layer type
             output_function (str) -- activation function for the last layer [sigmoid]
         """
-        super(RevealNet, self).__init__()
-        # input is (3) * 256 * 256
+        super(VanillaCNN, self).__init__()
+        self.input_nc = input_nc
 
         # nrf: number of filters in the first/last conv layer of reveal network
         self.conv1 = nn.Conv2d(input_nc, nrf, kernel_size=3, stride=1, padding=1)
@@ -170,7 +188,7 @@ class RevealNet(nn.Module):
         if output_function == 'sigmoid':
             self.output = nn.Sigmoid()
         else:
-            raise NotImplementedError('activation funciton [%s] is not found' % output_function)
+            raise NotImplementedError('Activation funciton [%s] is not found!' % output_function)
         
         self.relu = nn.ReLU(True)
 
@@ -182,6 +200,7 @@ class RevealNet(nn.Module):
         self.norm5 = self.norm_layer(nrf)
 
     def forward(self, X):
+        X = cat_zeros(X, self.input_nc)
         X = self.relu(self.norm1(self.conv1(X)))
         X = self.relu(self.norm2(self.conv2(X)))
         X = self.relu(self.norm3(self.conv3(X)))
@@ -192,15 +211,86 @@ class RevealNet(nn.Module):
 
 
 class EncodingNet(nn.Module):
+    """Create a fully connected layer for encoding keys."""
     def __init__(self, key_len, key_channel, redundance, batch_size):
+        """
+        Parameters:
+            key_len (int)     -- length of the input key
+            key_channel (int) -- channel number of the encoded key
+            redundance (int)  -- redundance size of key; e.g. `32` for encoding key into a `key_channel`*32*32 tensor; `-1` for simple duplication
+            batch_size (int)  -- batch size
+        """
         super(EncodingNet, self).__init__()
         self.key_len, self.key_channel, self.redundance, self.batch_size = key_len, key_channel, redundance, batch_size
         if redundance != -1:
             self.linear = nn.Linear(key_len, key_channel*redundance*redundance)
 
     def forward(self, X):
-        if self.redundance != -1:
+        if self.redundance != -1:  # encode the input key by a fully connected layer
             X = self.linear(X)
             return X.view(1, self.key_channel, self.redundance, self.redundance).repeat(self.batch_size, 1, self.key_len//self.redundance, self.key_len//self.redundance)
-        else:
+        else:  # simply repeat
             return X.view(1, 1, 1, self.key_len).repeat(self.batch_size, self.key_channel, self.key_len, 1)
+
+
+class DenseBlock(nn.Module):
+    def __init__(self, input_nc, output_nc, nc=32, kaiming=False, bias=True):
+        super(DenseBlock, self).__init__()
+        self.conv1 = nn.Conv2d(input_nc, nc, 3, 1, 1, bias=bias)
+        self.conv2 = nn.Conv2d(input_nc+nc, nc, 3, 1, 1, bias=bias)
+        self.conv3 = nn.Conv2d(input_nc+2*nc, nc, 3, 1, 1, bias=bias)
+        self.conv4 = nn.Conv2d(input_nc+3*nc, nc, 3, 1, 1, bias=bias)
+        self.conv5 = nn.Conv2d(input_nc+4*nc, output_nc, 3, 1, 1, bias=bias)
+        self.lrelu = nn.LeakyReLU(0.2, inplace=True)
+
+        init_inv_weights([self.conv1, self.conv2, self.conv3, self.conv4], 0.1, kaiming)
+        init_inv_weights(self.conv5, 0, True)
+
+    def forward(self, x):
+        x1 = self.lrelu(self.conv1(x))
+        x2 = self.lrelu(self.conv2(torch.cat((x, x1), dim=1)))
+        x3 = self.lrelu(self.conv3(torch.cat((x, x1, x2), dim=1)))
+        x4 = self.lrelu(self.conv4(torch.cat((x, x1, x2, x3), dim=1)))
+        x5 = self.conv5(torch.cat((x, x1, x2, x3, x4), dim=1))
+        return x5
+
+
+class InvBlock(nn.Module):
+    def __init__(self, input_nc, split_nc, n=3):
+        super(InvBlock, self).__init__()
+
+        self.nc1, self.nc2 = split_nc, input_nc-split_nc
+
+        self.F = make_layers(DenseBlock(self.nc2, self.nc1), n)
+        self.G = make_layers(DenseBlock(self.nc1, self.nc2), n)
+        self.H = make_layers(DenseBlock(self.nc1, self.nc2), n)
+
+    def forward(self, x, rev=False):
+        x1, x2 = x[:, :self.nc1, :, :], x[:, self.nc1:, :, :]
+        if not rev:
+            y1 = x1 + self.F(x2)
+            y2 = x2.mul(torch.exp(torch.sigmoid(self.H(y1))*2 - 1)) + self.G(y1)
+        else:
+            y2 = (x2 - self.G(x1)).div(torch.exp(torch.sigmoid(self.H(x1))*2 - 1))
+            y1 = x1 - self.F(y2)
+        return torch.cat((y1, y2), dim=1)
+
+
+class InvHidingNet(nn.Module):
+    def __init__(self, input_nc, split_nc, N=8, n=3):
+        super(InvHidingNet, self).__init__()
+        operations = []
+        for _ in range(N):
+            block = InvBlock(input_nc, split_nc, n)
+            operations.append(block)
+        self.model_list = nn.ModuleList(operations)
+
+    def forward(self, X, rev=False):
+        output = X
+        if not rev:
+            for m in self.model_list:
+                output = m.forward(output, rev)
+        else:
+            for m in reversed(self.model_list):
+                output = m.forward(output, rev)
+        return output

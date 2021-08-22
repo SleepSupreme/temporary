@@ -4,68 +4,103 @@ from torch.optim import lr_scheduler
 
 from utils.options import opt, device
 from utils.util import *
-from .networks import UnetGenerator, RevealNet, EncodingNet
+from .networks import *
 
 
-def get_nets(cover_dependent=opt.cover_dependent, without_key=opt.without_key):
-    """According to `cover_dependent` and `without_key` return three structured networks: hiding, reveal and encoding net."""
-    if cover_dependent:
-        cover_dim = opt.channel_cover
-        output_function_H = 'sigmoid'
-    else:
-        cover_dim = 0
-        output_function_H = 'tanh'
+def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, cover_dependent=opt.cover_dependent, without_key=opt.without_key, fill_zeros=opt.fill_zeros):
+    """According to options return several structured networks: hiding, reveal and encoding net."""
+    if not invertible:
+        if cover_dependent:
+            cover_dim = opt.channel_cover
+            output_function_H = 'sigmoid'
+        else:
+            cover_dim = 0
+            output_function_H = 'tanh'
+        
+        if without_key:
+            input_nc_H = cover_dim + opt.num_secrets * opt.channel_secret
+            input_nc_R = opt.channel_cover
+        else:
+            input_nc_H = cover_dim + opt.num_secrets * (opt.channel_secret+opt.channel_key)
+            input_nc_R = opt.channel_cover + opt.channel_key
+
+        if fill_zeros:  # reserve excess channels for keys; the same as the channels with opt.without_key==False
+            input_nc_H = cover_dim + opt.num_secrets * (opt.channel_secret+opt.channel_key)
+            input_nc_R = opt.channel_cover + opt.channel_key
+
+        if htype == 'unet':
+            Hnet = Unet(
+                input_nc=input_nc_H,
+                output_nc=opt.channel_cover,
+                num_downs=opt.num_downs,
+                norm_type=opt.norm_type,
+                output_function=output_function_H
+            )
+        else:
+            raise NotImplementedError('Hiding network structure [%s] is not found!' % htype)
+
+        if rtype == 'vanilla':
+            Rnet = VanillaCNN(
+                input_nc=input_nc_R,
+                output_nc=opt.channel_secret,
+                norm_type=opt.norm_type,
+                output_function='sigmoid'
+            )
+        else:
+            raise NotImplementedError('Reveal network structure [%s] is not found!' % rtype)
+
+        Hnet.apply(weights_init)
+        Rnet.apply(weights_init)
+        Hnet = torch.nn.DataParallel(Hnet).to(device)
+        Rnet = torch.nn.DataParallel(Rnet).to(device)
+        HRnet = nn.ModuleList([Hnet, Rnet])
     
-    if without_key:
-        input_nc_H = cover_dim + opt.num_secrets * opt.channel_secret
-        input_nc_R = opt.channel_cover
-    else:
-        input_nc_H = cover_dim + opt.num_secrets * (opt.channel_secret+opt.channel_key)
-        input_nc_R = opt.channel_cover + opt.channel_key
-
-    Hnet = UnetGenerator(
-        input_nc=input_nc_H,
-        output_nc=opt.channel_cover,
-        num_downs=opt.num_downs,
-        norm_type=opt.norm_type,
-        output_function=output_function_H
-    )
-    Rnet = RevealNet(
-        input_nc=input_nc_R,
-        output_nc=opt.channel_secret,
-        norm_type=opt.norm_type,
-        output_function='sigmoid'
-    )
+    else:  # invertible network
+        if cover_dependent:
+            input_nc = opt.channel_cover + opt.channel_secret * opt.num_secrets
+            split_nc = opt.channel_cover
+        else:
+            input_nc = (opt.channel_secret + opt.channel_key) * opt.num_secrets
+            split_nc = opt.channel_key * opt.num_secrets
+        
+        HRnet = InvHidingNet(
+            input_nc, split_nc, N=opt.num_inv, n=opt.num_sub
+        )
+        # weights are already initialized
+        HRnet = torch.nn.DataParallel(HRnet).to(device)
 
     Enet = EncodingNet(opt.image_size, opt.channel_key, opt.redundance, opt.batch_size)
-
-    Hnet.apply(weights_init)
-    Rnet.apply(weights_init)
     Enet.apply(weights_init)
-    Hnet = torch.nn.DataParallel(Hnet).to(device)
-    Rnet = torch.nn.DataParallel(Rnet).to(device)
     Enet = torch.nn.DataParallel(Enet).to(device)
-    return Hnet, Rnet, Enet
+    return HRnet, Enet
 
 
-def load_checkpoints(Hnet, Rnet, Enet, optimizer, scheduler, checkpoint_path=opt.checkpoint_path):
-    """Load checkpoints for `Hnet`, `Rnet`, `Enet`, `optimizer` and `scheduler` from `checkpoint_path`."""
+def load_checkpoint(HRnet, Enet, optimizer=None, scheduler=None, invertible=opt.invertible, checkpoint_path=opt.checkpoint_path):
+    """Load checkpoint from `checkpoint_path`."""
     checkpoint = torch.load(checkpoint_path)
-    Hnet.load_state_dict(checkpoint['H_state_dict'])
-    Rnet.load_state_dict(checkpoint['R_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    scheduler.load_state_dict(checkpoint['scheduler'])
-    if opt.redundance != -1:
+    if not invertible:
+        HRnet[0].load_state_dict(checkpoint['H_state_dict'])
+        HRnet[1].load_state_dict(checkpoint['R_state_dict'])
+    else:
+        HRnet.load_state_dict(checkpoint['I_state_dict'])
+    try:
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
         Enet.load_state_dict(checkpoint['E_state_dict'])
-    return Hnet, Rnet, Enet, optimizer, scheduler
+    except (ValueError, KeyError, AttributeError):  # in case did not save checkpoints (properly) or the inputs are None
+        pass
+    return HRnet, Enet, optimizer, scheduler
 
 
 def get_scheduler(optimizer):
     """Return a learning rate scheduler by `opt.lr_policy` for `optimizer`."""
-    if opt.lr_policy == 'linear':
-        scheduler = lr_scheduler.L
+    if opt.lr_policy == 'fixed':
         def lambda_rule(epoch):
-            epoch_init_lr = opt.lr_decay_freq  # number of epochs with initial learning rate
+            return 1.0
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
+    elif opt.lr_policy == 'linear':
+        def lambda_rule(epoch):
+            epoch_init_lr = 30  # number of epochs with initial learning rate
             epoch_decay_lr = opt.epochs - epoch_init_lr  # number of epochs to linearly decay learning rate
             lr_l = 1.0 - max(0, epoch + 1 - epoch_init_lr) / float(epoch_decay_lr + 1)
             return lr_l
@@ -75,27 +110,27 @@ def get_scheduler(optimizer):
     elif opt.lr_policy == 'plateau':
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
     elif opt.lr_policy == 'cosine':
-        T_max_epoch = opt.lr_decay_freq
+        T_max_epoch = 20  # 2 * T_max_epoch == period of the cosine scheduler
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max_epoch, eta_min=0)
     else:
-        return NotImplementedError('learning rate policy [%s] is not implemented' % opt.lr_policy)
+        raise NotImplementedError('learning rate policy [%s] is not implemented' % opt.lr_policy)
     return scheduler
 
 
-def forward_pass(cover, secret, Hnet, Rnet, Enet, criterion,
-                epoch=None, modified_bits=opt.modified_bits, cover_dependent=opt.cover_dependent, without_key=opt.without_key,
-                key=opt.key, generation_type=opt.generation_type, fake_key=opt.fake_key):
+def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
+                modified_bits=opt.modified_bits, invertible=opt.invertible, cover_dependent=opt.cover_dependent,
+                without_key=opt.without_key, key=opt.key, generation_type=opt.generation_type, fake_key=opt.fake_key):
     """Forward propagation for hiding and reveal network and calculate losses and APD.
     
     Parameters:
         cover (Tensor)         -- cover image in batch
         secret (Tensor)        -- secret image in batch
-        Hnet (Module)          -- hiding network
-        Rnet (Module)          -- reveal network
-        Enet (Module)          -- encoding network
-        criterion (Loss)       -- loss function
+        HRnet                  -- hiding and reveal network
+        Enet                   -- encoding network
+        criterion              -- loss function
         epoch (int/None)       -- epoch number
         modidied_bits (int)    -- numbers of modified bits on the true key
+        invertible (bool)      -- use invertible network or not
         cover_dependent (bool) -- cover-dependent deep hiding or not
         without_key (bool)     -- hiding data without key or not
         key (str)              -- custom true key or a null string
@@ -132,22 +167,25 @@ def forward_pass(cover, secret, Hnet, Rnet, Enet, criterion,
 
         # set for fake keys
         fake_key, encode_fake_key = None, None
-        if generation_type == 'random':
+        if generation_type == 'uniform':
             assert opt.num_secrets == 1
             num = np.random.randint(1, 129)
             fake_key = modify_key(key_list[0], num)
         elif generation_type == 'gradual':
             RANGE = [128,96,80,64,48,32,16,8]
+            assert opt.epochs == len(RANGE), "Length of the list should be the same as training epochs"
             num = RANGE[epoch//10]
             fake_key = modify_key(key_list[0], num)
         elif generation_type == 'custom':
             fake_key = md5(fake_key)
-        else:
+        elif generation_type == 'random':
             fake_key = random_key(w)
             # make sure fake key is not equal to all the true keys
             for k in key_list:
                 while torch.equal(k, fake_key):
                     fake_key = random_key(w)
+        else:
+            return NotImplementedError('generation type [%s] is not implemented' % generation_type)
 
         if opt.num_secrets == 1:
             count_diff = int(torch.sum(torch.abs(fake_key - key_list[0])).item())
@@ -157,56 +195,106 @@ def forward_pass(cover, secret, Hnet, Rnet, Enet, criterion,
             encode_key_list.append(Enet(k))
         encode_fake_key = Enet(fake_key)
 
-    # hiding net
-    if cover_dependent:
-        if without_key:
-            H_input = cover
-            for i in range(opt.num_secrets):
-                H_input = torch.cat((H_input, secret_list[i]), dim=1)
+    if not invertible:
+        Hnet, Rnet = HRnet[0], HRnet[1]
+        # hiding net
+        if cover_dependent:
+            if without_key:
+                H_input = cover
+                for i in range(opt.num_secrets):
+                    H_input = torch.cat((H_input, secret_list[i]), dim=1)
+            else:
+                H_input = cover
+                for i in range(opt.num_secrets):
+                    H_input = torch.cat((H_input, secret_list[i], encode_key_list[i]), dim=1)
         else:
-            H_input = cover
-            for i in range(opt.num_secrets):
-                H_input = torch.cat((H_input, secret_list[i], encode_key_list[i]), dim=1)
-    else:
-        if without_key:
-            H_input = secret_list[0]
-            for i in range(1, opt.num_secrets):
-                H_input = torch.cat((H_input, secret_list[i]), dim=1)
-        else:
-            H_input = torch.cat((secret_list[0], encode_key_list[0]), dim=1)
-            for i in range(1, opt.num_secrets):
-                H_input = torch.cat((H_input, secret_list[i], encode_key_list[i]), dim=1)
-    H_output = Hnet(H_input)
+            if without_key:
+                H_input = secret_list[0]
+                for i in range(1, opt.num_secrets):
+                    H_input = torch.cat((H_input, secret_list[i]), dim=1)
+            else:
+                H_input = torch.cat((secret_list[0], encode_key_list[0]), dim=1)
+                for i in range(1, opt.num_secrets):
+                    H_input = torch.cat((H_input, secret_list[i], encode_key_list[i]), dim=1)
+        H_output = Hnet(H_input)
 
-    if cover_dependent:
-        container = H_output
-    else:
-        container = H_output + cover
+        if cover_dependent:
+            container = H_output
+        else:
+            container = H_output + cover
+        
+        H_loss, R_loss, R_loss_ = criterion(container, cover), 0.0, 0.0
+
+        # reveal net (with (modified) true key(s))
+        if without_key:
+            R_output = Rnet(container)
+            for i in range(opt.num_secrets):
+                rev_secret_list.append(R_output[:, i*c_s:(i+1)*c_s, :, :])
+                R_loss += criterion(secret_list[i], rev_secret_list[i])
+        else:
+            for i in range(opt.num_secrets):
+                new_key = modify_key(key_list[i], modified_bits)
+                new_encoded_key = Enet(new_key)
+                
+                R_output = Rnet(torch.cat((container, new_encoded_key), dim=1))
+                rev_secret_list.append(R_output)
+                R_loss += criterion(secret_list[i], rev_secret_list[i])
+        R_loss /= opt.num_secrets
+
+        # reveal net (with fake key)
+        rev_secret_, R_loss_, R_diff_ = None, 0, 0
+        if not without_key:
+            rev_secret_ = Rnet(torch.cat((container, encode_fake_key), dim=1))
+            R_loss_ = criterion(rev_secret_, torch.zeros(rev_secret_.shape).to(device))
+            R_diff_ = rev_secret_.abs().mean() * 255
     
-    H_loss, R_loss, R_loss_ = criterion(container, cover), 0.0, 0.0
+    else:  # invertible network
+        if cover_dependent:
+            assert without_key, "Do not use key in cover-dependent invertible network"
 
-    # reveal net (with (modified) true key(s))
-    if without_key:
-        R_output = Rnet(container)
-        for i in range(opt.num_secrets):
-            rev_secret_list.append(R_output[:, i*c_s:(i+1)*c_s, :, :])
-            R_loss += criterion(secret_list[i], rev_secret_list[i])
-    else:
-        for i in range(opt.num_secrets):
-            new_key = modify_key(key_list[i], modified_bits)
-            new_encoded_key = Enet(new_key)
+            HR_input = cover
+            for i in range(opt.num_secrets):
+                HR_input = torch.cat((HR_input, secret_list[i]), dim=1)
             
-            R_output = Rnet(torch.cat((container, new_encoded_key), dim=1))
-            rev_secret_list.append(R_output)
-            R_loss += criterion(secret_list[i], rev_secret_list[i])
-    R_loss /= opt.num_secrets
+            HR_output = HRnet(HR_input)
+            container = HR_output[:, :c, :, :]
+            z = HR_output[:, c:, :, :]
+            
+            CONSTANT = torch.ones(z.shape).to(device)*0.5
+            H_loss = 32*criterion(container, cover) + criterion(z, CONSTANT)
 
-    # reveal net (with fake key)
-    rev_secret_, R_loss_, R_diff_ = None, 0, 0
-    if not without_key:
-        rev_secret_ = Rnet(torch.cat((container, encode_fake_key), dim=1))
-        R_loss_ = criterion(rev_secret_, torch.zeros(rev_secret_.shape).to(device))
-        R_diff_ = rev_secret_.abs().mean() * 255
+            criterion_l1 = nn.L1Loss().to(device)
+            HR_input_inv = torch.cat((container, CONSTANT), dim=1)
+            HR_output_inv = HRnet(HR_input_inv, rev=True)
+            cover_inv = HR_output_inv[:, :c, :, :]
+
+            R_loss = criterion_l1(cover_inv, cover)
+            for i in range(opt.num_secrets):
+                secret_inv = HR_output_inv[:, c+i*c_s:c+(i+1)*c_s, :, :]
+                R_loss = criterion_l1(secret_inv, secret_list[i])
+                rev_secret_list.append(secret_inv)
+        else:
+            pass
+            """HR_input = torch.cat((encode_key_list[0], secret_list[0]), dim=1)
+            
+            HR_output = HRnet(HR_input)
+            container = HR_output[:, -c_s:, :, :] + cover
+
+            H_loss = criterion(container, cover)
+
+            HR_input_inv = torch.cat((encode_key_list[0], container), dim=1)
+            HR_output_inv = HRnet(HR_input_inv, rev=True)
+            
+            secret_inv = HR_output_inv[:, -c_s:, :, :]
+            R_loss = criterion(secret_inv, secret_list[0])
+            rev_secret_list.append(secret_inv)"""
+        
+        rev_secret_, R_loss_, R_diff_ = None, 0, 0
+        if not without_key:
+            rev_secret_ = HRnet(torch.cat((encode_fake_key, container), dim=1), rev=True)[:, -c_s:, :, :]
+            R_loss_ = criterion(rev_secret_, secret_list[0])
+            R_diff_ = (rev_secret_ - secret_list[0]).abs().mean() * 255
+
 
     # L1 metric (APD)
     H_diff = (container-cover).abs().mean() * 255
@@ -221,20 +309,19 @@ def forward_pass(cover, secret, Hnet, Rnet, Enet, criterion,
 
 
 def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_secret,
-            Hnet, Rnet, Enet, criterion, optimizer, scheduler):
-    """Train Hnet and Rnet and schedule learning rate by the validation results.
+            HRnet, Enet, criterion, optimizer, scheduler):
+    """Train HRnet and schedule learning rate by the validation results.
     
     Parameters:
-        train_loader_cover (DataLoader)  -- loader for training cover images
-        train_loader_secret (DataLoader) -- loader for training secret images
-        val_loader_cover (DataLoader)    -- loader for val cover images
-        val_loader_secret (DataLoader)   -- loader for val secret images
-        Hnet (Module)                    -- hiding network
-        Rnet (Module)                    -- reveal network
-        Enet (Module)                    -- encoding network
-        criterion (Loss)                 -- loss function
-        optimizer (Module)               -- optimizer for nets
-        scheduler (Scheduler)            -- scheduler for optimizer to set dynamic learning rate
+        train_loader_cover  -- loader for training cover images
+        train_loader_secret -- loader for training secret images
+        val_loader_cover    -- loader for val cover images
+        val_loader_secret   -- loader for val secret images
+        HRnet               -- hiding and reveal network
+        Enet                -- encoding network
+        criterion           -- loss function
+        optimizer           -- optimizer for nets
+        scheduler           -- scheduler for optimizer to set dynamic learning rate
     """
     min_loss = float('inf')
     h_loss_list, r_loss_list, r_loss_list_ = [], [], []
@@ -242,7 +329,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
     iters_per_epoch = opt.dataset_size_train // opt.batch_size
     print("######## TRAIN BEGIN ########")
 
-    if opt.load_checkpoint:
+    if opt.continue_train:
         checkpoint = torch.load(opt.checkpoint_path)
         start_epoch = checkpoint['epoch']
     else:
@@ -261,8 +348,11 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
         Diff_bits = AverageMeter()
 
         # turn on training mode
-        Hnet.train()
-        Rnet.train()
+        if not opt.invertible:
+            HRnet[0].train()
+            HRnet[1].train()
+        else:
+            HRnet.train()
         Enet.train()
 
         start_time = time.time()
@@ -276,7 +366,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
 
             cover, container, secret_list, rev_secret_list, rev_secret_,\
                 H_loss, R_loss, R_loss_, H_diff, R_diff, R_diff_, count_diff\
-                    = forward_pass(cover, secret, Hnet, Rnet, Enet, criterion, epoch=epoch)
+                    = forward_pass(cover, secret, HRnet, Enet, criterion, epoch=epoch)
 
             H_losses.update(H_loss.item(), batch_size)
             R_losses.update(R_loss.item(), batch_size)
@@ -287,7 +377,10 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
                 R_losses_.update(R_loss_.item(), batch_size)
                 R_diffs_.update(R_diff_.item(), batch_size)
 
-            loss = H_loss + opt.beta*R_loss + opt.gamma*R_loss_
+            if not opt.invertible:
+                loss = H_loss + opt.beta*R_loss + opt.gamma*R_loss_
+            else:
+                loss = H_loss + R_loss
             Sum_losses.update(loss.item(), batch_size)
 
             optimizer.zero_grad()
@@ -338,7 +431,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
 
         val_Sum_loss, val_H_loss, val_R_loss, val_R_loss_, val_H_diff, val_R_diff, val_R_diff_\
             = test(val_loader_cover, val_loader_secret,
-                Hnet, Rnet, Enet, criterion,
+                HRnet, Enet, criterion,
                 save_num=1, mode='val', epoch=epoch
         )
 
@@ -352,45 +445,38 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
 
         state = 'best' if is_best else 'newest'
         print_log("Save the %s checkpoint: epoch%03d\n" % (state, epoch))
-        if opt.redundance != -1:  # save Enet
-            save_checkpoint(
-                {
-                    'epoch': epoch,
-                    'H_state_dict': Hnet.state_dict(),
-                    'R_state_dict': Rnet.state_dict(),
-                    'E_state_dict': Enet.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict()
-                }, is_best=is_best
-            )
-        else:  # not save Enet
-            save_checkpoint(
-                {
-                    'epoch': epoch,
-                    'H_state_dict': Hnet.state_dict(),
-                    'R_state_dict': Rnet.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict()
-                }, is_best=is_best
-            )
+        
+        save_dict = {
+            'epoch': epoch,
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict()
+        }
+        if not opt.invertible:
+            save_dict['H_state_dict'] = HRnet[0].state_dict()
+            save_dict['R_state_dict'] = HRnet[1].state_dict()
+        else:
+            save_dict['I_state_dict'] = HRnet.state_dict()
+        if opt.redundance != 1:
+            save_dict['E_state_dict'] = Enet.state_dict()
+        save_checkpoint(save_dict, is_best)
+
     print("######## TRAIN END ########")
 
 
-def test(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion,\
+def test(data_loader_cover, data_loader_secret, HRnet, Enet, criterion,\
                 save_num=1, mode='test', epoch=None, modified_bits=opt.modified_bits):
-    """Validate or test the performance of Hnet and Rnet.
+    """Validate or test the performance of HRnet.
 
     Parameters:
-        data_loader_cover (DataLoader)  -- data loader for cover images
-        data_loader_secret (DataLoader) -- data loader for secret images
-        Hnet (Module)                   -- hiding network
-        Rnet (Module)                   -- reveal network
-        Enet (Module)                   -- encoding network
-        criterion (Loss)                -- loss function
-        save_num (int)                  -- numbers of saved images
-        mode (str)                      -- mode of this function [val | test]
-        epoch (int/None)                -- epoch number
-        modidied_bits (int)             -- numbers of modified bits on the true key
+        data_loader_cover   -- data loader for cover images
+        data_loader_secret  -- data loader for secret images
+        HRnet               -- hiding and reveal network
+        Enet                -- encoding network
+        criterion           -- loss function
+        save_num (int)      -- numbers of saved images
+        mode (str)          -- mode of this function [val | test]
+        epoch (int/None)    -- epoch number
+        modidied_bits (int) -- numbers of modified bits on the true key
     """
     assert mode in ['val', 'test'], 'Mode is expected to be either `val` or `test`'
 
@@ -409,8 +495,11 @@ def test(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion,\
     Diff_bits = AverageMeter()
 
     # turn on val mode
-    Hnet.eval()
-    Rnet.eval()
+    if not opt.invertible:
+        HRnet[0].eval()
+        HRnet[1].eval()
+    else:
+        HRnet.eval()
 
     data_loader = zip(data_loader_cover, data_loader_secret)
     for i, (cover, secret) in enumerate(data_loader, start=1):
@@ -419,7 +508,7 @@ def test(data_loader_cover, data_loader_secret, Hnet, Rnet, Enet, criterion,\
 
         cover, container, secret_list, rev_secret_list, rev_secret_,\
             H_loss, R_loss, R_loss_, H_diff, R_diff, R_diff_, count_diff\
-                = forward_pass(cover, secret, Hnet, Rnet, Enet, criterion, epoch=epoch)
+                = forward_pass(cover, secret, HRnet, Enet, criterion, epoch=epoch)
 
         H_losses.update(H_loss.item(), batch_size)
         R_losses.update(R_loss.item(), batch_size)

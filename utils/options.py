@@ -46,7 +46,13 @@ parser.add_argument('--channel_key', type=int, default=3, help='number of channe
 parser.add_argument('--num_downs', type=int, default=5, help='number of down submodules in U-Net')
 parser.add_argument('--norm_type', type=str, default='batch', help='type of normalization layer')
 parser.add_argument('--loss', type=str, default='l2', help='loss function [l1 | l2]')
-parser.add_argument('--num_secrets', type=int, default=1, help='the number of secret images to be hidden')
+parser.add_argument('--num_secrets', type=int, default=1, help='number of secret images to be hidden')
+parser.add_argument('--htype', type=str, default='unet', help='structure type of hiding network')
+parser.add_argument('--rtype', type=str, default='vanilla', help='structure type of reveal network')
+parser.add_argument('--fill_zeros', action='store_true', help='reserve excess channels for keys and fill them with zeros')
+parser.add_argument('--invertible', action='store_true', help='use invertible network or not')
+parser.add_argument('--num_inv', type=int, default=4, help='number of invertible blocks')
+parser.add_argument('--num_sub', type=int, default=3, help='number of sub-blocks in one invertible block')
 
 # training parameters
 parser.add_argument('--epochs', type=int, default=80, help='epochs for training')
@@ -58,22 +64,22 @@ parser.add_argument('--lr_policy', type=str, default='step', help='learning rate
 parser.add_argument('--lr_decay_freq', type=int, default=30, help='frequency of decaying lr in `step` mode')
 parser.add_argument('--decay_num', type=int, default=2, help='decay number for lr in `step` mode')
 parser.add_argument('--shuffle_secret', action='store_true', help='hide nosie image as secret in training')
+parser.add_argument('--continue_train', action='store_true', help='load newest checkpoint and continue training')
 
 # test parameters
 parser.add_argument('--test', action='store_true', help='test mode')
-parser.add_argument('--load_checkpoint', action='store_true', help='load checkpoint')
+parser.add_argument('--checkpoint_name', type=str, default='', help='experiment name of the loaded checkpoint')
 parser.add_argument('--checkpoint_type', type=str, default='best', help='type of the checkpint file [best | newest]')
 parser.add_argument('--checkpoint_path', type=str, default='', help='path of one checkpint file')
 
 # key parameters
-parser.add_argument('--redundance', type=int, default=-1, help='redundance size of key; e.g. `32` for mapping it to a 3*32*32 tensor; `-1` for simple duplication')
-parser.add_argument('--generation_type', type=str, default='random_generation', help='generation type of a fake key [random | gradual | custom | ELSE (e.g. random_generation)]')
+parser.add_argument('--redundance', type=int, default=32, help='redundance size of key; e.g. `32` for encoding key into a 3*32*32 tensor; `-1` for simple duplication')
+parser.add_argument('--generation_type', type=str, default='gradual', help='generation type of a fake key [uniform | random | gradual | custom]')
 parser.add_argument('--modified_bits', type=int, default=0, help='number of modified bits for test')
 parser.add_argument('--key', type=str, default='', help='true key')
 parser.add_argument('--fake_key', type=str, default='', help='fake key')
 
 # set global variables
-
 opt, _ = parser.parse_known_args()  # opt = parser.parse_args()
 device = torch.device("cuda:0" if opt.gpu_ids != -1 and torch.cuda.is_available() else "cpu")
 
@@ -84,16 +90,33 @@ assert _ngpu <= torch.cuda.device_count(), "There are not enough GPUs!"
 _r = opt.redundance
 assert (_r == -1) or (_r % 2 == 0 and _r >= 8), "Unexpected redundance size!"
 
+if opt.continue_train:
+    opt.checkpoint_name = opt.exper_name
+    opt.checkpoint_type = 'newest'
+
 if opt.test:
-    opt.load_checkpoint = True
-    assert opt.load_checkpoint, "Test mode must load the checkpoint file!"
-    opt.generation_type = 'random_generation'
+    opt.checkpoint_name = opt.exper_name
+    opt.generation_type = 'random'
+
+if opt.checkpoint_name != '':  # including opt.test==True and opt.continue_train==True
+    _cdir = opt.root +  '/sdh/exper_info/' + opt.checkpoint_name
+    assert os.path.exists(_cdir), "Loaded heckpoint does not exist!"
+    opt.checkpoint_path = _cdir + '/checkpoints/checkpoint_%s.pth.tar' % opt.checkpoint_type
 
 if opt.generation_type == 'custom':
     assert opt.fake_key != '', "A custom fake key should be given with the custom generation type!"
 
 if not opt.test:
     assert opt.modified_bits == 0, "Do not modify true key in training mode"
+
+if opt.cover_dependent:
+    opt.redundance = -1
+
+if opt.invertible:
+    assert opt.cover_dependent or (not opt.without_key), "Invertible network should be cover-dependent or with-key"
+    assert opt.channel_cover == opt.channel_secret, "Channel of cover and secret images should be the same in invertible network"
+    opt.lr_policy = 'fixed'
+    opt.generation_type = 'random'
 
 # default path
 opt.dataset_dir = opt.root + '/dataset'

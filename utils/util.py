@@ -48,18 +48,20 @@ def shuffle_pix(tensor, N=1):
     arange = np.arange(num**2)
     np.random.shuffle(arange)
 
-    if N != 1:
-        shuf_tensor = torch.zeros(tensor.shape)
+    if N == h:  # more efficient for no-shuffle case
+        return tensor.detach().clone()
+    elif N == 1:  # more efficient for N=1 case
+        shuf_tensor = tensor.detach().clone().reshape(b, c, -1)
+        shuf_tensor[:, :, range(h*w)] = tensor.reshape(b, c, -1)[:, :, arange]
+        return shuf_tensor.reshape(b, c, h, w)
+    else:
+        shuf_tensor = torch.zeros(tensor.shape).to(device)
         for i in range(num):
             for j in range(num):
                 idx = arange[i*num + j]
                 I, J = idx//num, idx%num
                 shuf_tensor[:,:,i*N:(i+1)*N,j*N:(j+1)*N] = tensor[:,:,I*N:(I+1)*N,J*N:(J+1)*N]
         return shuf_tensor
-    else:  # more efficient for N=1 version
-        shuf_tensor = tensor.detach().clone().reshape(b, c, -1)
-        shuf_tensor[:, :, range(h*w)] = tensor.reshape(b, c, -1)[:, :, arange]
-        return shuf_tensor.reshape(b, c, h, w).to(device)
 
 
 def recover_pix(tensor, N=1):
@@ -73,18 +75,20 @@ def recover_pix(tensor, N=1):
     arange = np.arange(num**2)
     np.random.shuffle(arange)
 
-    if N != 1:
-        cover_tensor = torch.zeros(tensor.shape)
+    if N == h:  # more efficient for no-shuffle case
+        return tensor.detach().clone()
+    elif N == 1:  # more efficient for N=1 case
+        cover_tensor = tensor.detach().clone().reshape(b, c, -1)
+        cover_tensor[:, :, arange] = tensor.reshape(b, c, -1)[:, :, range(h*w)]
+        return cover_tensor.reshape(b, c, h, w)
+    else:
+        cover_tensor = torch.zeros(tensor.shape).to(device)
         for i in range(num):
             for j in range(num):
                 idx = arange[i*num + j]
                 I, J = idx//num, idx%num
                 cover_tensor[:,:,I*N:(I+1)*N,J*N:(J+1)*N] = tensor[:,:,i*N:(i+1)*N,j*N:(j+1)*N]
         return cover_tensor
-    else:  # more efficient for N=1 version
-        cover_tensor = tensor.detach().clone().reshape(b, c, -1)
-        cover_tensor[:, :, arange] = tensor.reshape(b, c, -1)[:, :, range(h*w)]
-        return cover_tensor.reshape(b, c, h, w).to(device)
 
 
 def to_image(tensor):
@@ -125,6 +129,32 @@ def weights_init(m):
     elif classname.find('Linear') != -1:
         nn.init.xavier_normal_(m.weight)
         nn.init.constant_(m.bias, 0)
+
+
+def init_inv_weights(net_list, scale=1, kaiming=False):
+    if not isinstance(net_list, list):
+        net_list = [net_list]
+    for net in net_list:
+        for m in net.modules():
+            if isinstance(m, nn.Conv2d):
+                if kaiming:
+                    nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
+                else:
+                    nn.init.xavier_normal_(m.weight)
+                m.weight.data *= scale  # for residual block
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                if kaiming:
+                    nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
+                else:
+                    nn.init.xavier_normal_(m.weight)
+                m.weight.data *= scale
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias.data, 0.0)
 
 
 def print_log(log_info, log_path=opt.log_path, console=True, rewrite=False):
