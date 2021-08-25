@@ -53,6 +53,7 @@ parser.add_argument('--fill_zeros', action='store_true', help='reserve excess ch
 parser.add_argument('--invertible', action='store_true', help='use invertible network or not')
 parser.add_argument('--num_inv', type=int, default=4, help='number of invertible blocks')
 parser.add_argument('--num_sub', type=int, default=3, help='number of sub-blocks in one invertible block')
+parser.add_argument('--btype', type=str, default='residual', help='block type of invertible network [dense | residual | udh-like]')
 
 # training parameters
 parser.add_argument('--epochs', type=int, default=80, help='epochs for training')

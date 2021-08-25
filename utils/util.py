@@ -188,8 +188,12 @@ def print_network(net, save_path=opt.options_path):
     print_log('Total number of parameters: %d\n' % num_params, save_path, console=False)
 
 
-def save_options(save_path=opt.options_path):
+def save_options(save_path=opt.options_path, test=False):
     """Save options as a .txt file to `save_path`."""
+    if test:
+        filepath, fullfilename = os.path.split(save_path)
+        filename, extension = os.path.splitext(fullfilename)
+        save_path = os.path.join(filepath, filename+'_test', extension)
     message = ''
     for k, v in sorted(vars(opt).items()):
         comment = ''
@@ -210,11 +214,11 @@ def save_checkpoint(state, is_best, save_path=opt.checkpoints_save_dir):
         is_best (bool)  -- the state is the best or not
         save_path (str) -- path to save the checkpoint
     """
+    filename = '%s/checkpoint_newest.pth.tar' % save_path
+    torch.save(state, filename)
     if is_best:  # best
         filename = '%s/checkpoint_best.pth.tar' % save_path
-    else:  # newest
-        filename = '%s/checkpoint_newest.pth.tar' % save_path
-    torch.save(state, filename)
+        torch.save(state, filename)
 
 
 def save_image(input_image, image_path, save_all=False, start=0):
@@ -389,5 +393,6 @@ def create_dirs(test=opt.test):
         else:
             if not os.path.exists(opt.test_pics_save_dir):
                 os.makedirs(opt.test_pics_save_dir)
+            save_options(test=True)
     except OSError:
         print("XXXXXXXX mkdir failed XXXXXXXX")
