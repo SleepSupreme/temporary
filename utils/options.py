@@ -53,17 +53,17 @@ parser.add_argument('--fill_zeros', action='store_true', help='reserve excess ch
 parser.add_argument('--invertible', action='store_true', help='use invertible network or not')
 parser.add_argument('--num_inv', type=int, default=4, help='number of invertible blocks')
 parser.add_argument('--num_sub', type=int, default=3, help='number of sub-blocks in one invertible block')
-parser.add_argument('--btype', type=str, default='residual', help='block type of invertible network [dense | residual | udh-like]')
+parser.add_argument('--btype', type=str, default='dense', help='block type of invertible network [dense]')
 
 # training parameters
-parser.add_argument('--epochs', type=int, default=80, help='epochs for training')
+parser.add_argument('--epochs', type=int, default=120, help='epochs for training')
 parser.add_argument('--batch_size', type=int, default=25, help='batch size')
 parser.add_argument('--beta', type=float, default=0.75, help='weight of true reveal')
 parser.add_argument('--gamma', type=float, default=0.5, help='weight of fake reveal')
 parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
 parser.add_argument('--lr_policy', type=str, default='step', help='learning rate policy [fixed | step | linear | plateau | cosine]')
 parser.add_argument('--lr_decay_freq', type=int, default=30, help='frequency of decaying lr in `step` mode')
-parser.add_argument('--decay_num', type=int, default=2, help='decay number for lr in `step` mode')
+parser.add_argument('--decay_num', type=int, default=5, help='decay number for lr in `step` mode')
 parser.add_argument('--shuffle_secret', action='store_true', help='hide nosie image as secret in training')
 parser.add_argument('--continue_train', action='store_true', help='load newest checkpoint and continue training')
 
@@ -114,8 +114,8 @@ if opt.cover_dependent:
     opt.redundance = -1
 
 if opt.invertible:
-    assert opt.cover_dependent or (not opt.without_key), "Invertible network should be cover-dependent or with-key"
-    assert opt.channel_cover == opt.channel_secret, "Channel of cover and secret images should be the same in invertible network"
+    assert opt.cover_dependent and (not opt.without_key), "ISN should be cover-dependent or with-key"
+    assert opt.channel_cover == opt.channel_secret, "Channel of cover and secret images should be the same in ISN"
     opt.lr_policy = 'fixed'
     opt.generation_type = 'random'
 

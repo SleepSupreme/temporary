@@ -261,9 +261,16 @@ class InvBlock(nn.Module):
 
         self.nc1, self.nc2 = split_nc, input_nc-split_nc
 
-        self.F = make_layers(DenseBlock(self.nc2, self.nc1), n)
-        self.G = make_layers(DenseBlock(self.nc1, self.nc2), n)
-        self.H = make_layers(DenseBlock(self.nc1, self.nc2), n)
+        elif btype == 'dense':
+            Block = DenseBlock
+        else:
+            raise NotImplementedError('InvBlock [%s] is not found!' % btype)
+
+        if n > 1:
+            assert self.nc1 == self.nc2, "Number of nput and output channel should be the same when using multiple blocks!"
+        self.F = make_layers(Block(self.nc2, self.nc1), n)
+        self.G = make_layers(Block(self.nc1, self.nc2), n)
+        self.H = make_layers(Block(self.nc1, self.nc2), n)
 
     def forward(self, x, rev=False):
         x1, x2 = x[:, :self.nc1, :, :], x[:, self.nc1:, :, :]
@@ -277,20 +284,19 @@ class InvBlock(nn.Module):
 
 
 class InvHidingNet(nn.Module):
-    def __init__(self, input_nc, split_nc, N=8, n=3):
+    def __init__(self, input_nc, split_nc, btype='dense', N=8, n=3):
         super(InvHidingNet, self).__init__()
         operations = []
         for _ in range(N):
-            block = InvBlock(input_nc, split_nc, n)
+            block = InvBlock(input_nc, split_nc, btype, n)
             operations.append(block)
         self.model_list = nn.ModuleList(operations)
 
     def forward(self, X, rev=False):
-        output = X
         if not rev:
             for m in self.model_list:
-                output = m.forward(output, rev)
+                output = m.forward(X, rev)
         else:
             for m in reversed(self.model_list):
-                output = m.forward(output, rev)
+                output = m.forward(X, rev)
         return output

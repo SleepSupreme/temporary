@@ -64,7 +64,7 @@ def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, cover_
             split_nc = opt.channel_key * opt.num_secrets
         
         HRnet = InvHidingNet(
-            input_nc, split_nc, N=opt.num_inv, n=opt.num_sub
+            input_nc, split_nc, btype=opt.btype, N=opt.num_inv, n=opt.num_sub
         )
         # weights are already initialized
         HRnet = torch.nn.DataParallel(HRnet).to(device)
@@ -150,8 +150,7 @@ def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
     if not without_key:
         # set true key(s)
         key_list, encode_key_list = [], []  # original key(s); encoded key(s)
-        # custom true key(s)
-        if key != '':
+        if key != '':  # custom true key(s)
             if '[' not in key:
                 key_list.append(md5(key))
             elif key != '':
@@ -160,12 +159,11 @@ def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
                     key_list.append(md5(rk))
 
             assert len(key_list) == opt.num_secrets, "Numbers of keys should be the same as secret images!"
-        # random true key(s)
-        else:
+        else:  # random true key(s)
             for i in range(opt.num_secrets):
                 key_list.append(random_key(w))
 
-        # set for fake keys
+        # set fake keys
         fake_key, encode_fake_key = None, None
         if generation_type == 'uniform':
             assert opt.num_secrets == 1
@@ -249,49 +247,32 @@ def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
             R_diff_ = rev_secret_.abs().mean() * 255
     
     else:  # invertible network
-        if cover_dependent:
-            assert without_key, "Do not use key in cover-dependent invertible network"
+        HR_input = cover
+        for i in range(opt.num_secrets):
+            HR_input = torch.cat((HR_input, secret_list[i]), dim=1)
+        
+        HR_output = HRnet(HR_input)
+        container = HR_output[:, :c, :, :]
+        z = HR_output[:, c:, :, :]
+        
+        CONSTANT = torch.ones(z.shape).to(device)*0.5
+        H_loss = 32*criterion(container, cover) + criterion(z, CONSTANT)
 
-            HR_input = cover
-            for i in range(opt.num_secrets):
-                HR_input = torch.cat((HR_input, secret_list[i]), dim=1)
-            
-            HR_output = HRnet(HR_input)
-            container = HR_output[:, :c, :, :]
-            z = HR_output[:, c:, :, :]
-            
-            CONSTANT = torch.ones(z.shape).to(device)*0.5
-            H_loss = 32*criterion(container, cover) + criterion(z, CONSTANT)
+        criterion_l1 = nn.L1Loss().to(device)
+        HR_input_inv = torch.cat((container, CONSTANT), dim=1)
+        HR_output_inv = HRnet(HR_input_inv, rev=True)
+        cover_inv = HR_output_inv[:, :c, :, :]
 
-            criterion_l1 = nn.L1Loss().to(device)
-            HR_input_inv = torch.cat((container, CONSTANT), dim=1)
-            HR_output_inv = HRnet(HR_input_inv, rev=True)
-            cover_inv = HR_output_inv[:, :c, :, :]
-
-            R_loss = criterion_l1(cover_inv, cover)
-            for i in range(opt.num_secrets):
-                secret_inv = HR_output_inv[:, c+i*c_s:c+(i+1)*c_s, :, :]
-                R_loss = criterion_l1(secret_inv, secret_list[i])
-                rev_secret_list.append(secret_inv)
-        else:
-            pass
-            """HR_input = torch.cat((encode_key_list[0], secret_list[0]), dim=1)
-            
-            HR_output = HRnet(HR_input)
-            container = HR_output[:, -c_s:, :, :] + cover
-
-            H_loss = criterion(container, cover)
-
-            HR_input_inv = torch.cat((encode_key_list[0], container), dim=1)
-            HR_output_inv = HRnet(HR_input_inv, rev=True)
-            
-            secret_inv = HR_output_inv[:, -c_s:, :, :]
-            R_loss = criterion(secret_inv, secret_list[0])
-            rev_secret_list.append(secret_inv)"""
+        R_loss = criterion_l1(cover_inv, cover)
+        for i in range(opt.num_secrets):
+            secret_inv = HR_output_inv[:, c+i*c_s:c+(i+1)*c_s, :, :]
+            R_loss = criterion_l1(secret_inv, secret_list[i])
+            rev_secret_list.append(secret_inv)
         
         rev_secret_, R_loss_, R_diff_ = None, 0, 0
-        if not without_key:
-            rev_secret_ = HRnet(torch.cat((encode_fake_key, container), dim=1), rev=True)[:, -c_s:, :, :]
+        if epoch is None:  # test mode
+            CONSTANT_FAKE = torch.zeros(z.shape).to(device)
+            rev_secret_ = HRnet(torch.cat((container, CONSTANT_FAKE), dim=1), rev=True)[:, -c_s:, :, :]
             R_loss_ = criterion(rev_secret_, secret_list[0])
             R_diff_ = (rev_secret_ - secret_list[0]).abs().mean() * 255
 
@@ -331,7 +312,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
 
     if opt.continue_train:
         checkpoint = torch.load(opt.checkpoint_path)
-        start_epoch = checkpoint['epoch']
+        start_epoch = checkpoint['epoch'] + 1
     else:
         start_epoch = 0
 
