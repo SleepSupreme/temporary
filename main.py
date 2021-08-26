@@ -42,7 +42,7 @@ def main():
     scheduler = get_scheduler(optimizer)
 
     if opt.checkpoint_name != '':
-        print("Loading checkpoints...")
+        print("Loading checkpoints from [%s]..." % opt.checkpoint_path)
         if opt.continue_train:  # continue training; checkpoint_name == exper_name
             HRnet, Enet, optimizer, scheduler = load_checkpoint(HRnet, Enet, optimizer, scheduler)
         elif opt.test:  # test mode; checkpoint_name == exper_name

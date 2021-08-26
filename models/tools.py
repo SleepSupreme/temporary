@@ -56,15 +56,11 @@ def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, cover_
         HRnet = nn.ModuleList([Hnet, Rnet])
     
     else:  # invertible network
-        if cover_dependent:
-            input_nc = opt.channel_cover + opt.channel_secret * opt.num_secrets
-            split_nc = opt.channel_cover
-        else:
-            input_nc = (opt.channel_secret + opt.channel_key) * opt.num_secrets
-            split_nc = opt.channel_key * opt.num_secrets
+        input_nc = opt.channel_cover + opt.channel_secret * opt.num_secrets
+        split_nc = opt.channel_cover
         
         HRnet = InvHidingNet(
-            input_nc, split_nc, btype=opt.btype, N=opt.num_inv, n=opt.num_sub
+            input_nc, split_nc, N=opt.num_inv, n=opt.num_sub
         )
         # weights are already initialized
         HRnet = torch.nn.DataParallel(HRnet).to(device)
@@ -272,6 +268,8 @@ def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
         rev_secret_, R_loss_, R_diff_ = None, 0, 0
         if epoch is None:  # test mode
             CONSTANT_FAKE = torch.zeros(z.shape).to(device)
+            CONSTANT_FAKE[:, :, :64, :64] = 1
+            CONSTANT_FAKE[:, :, 64:, 64:] = 1
             rev_secret_ = HRnet(torch.cat((container, CONSTANT_FAKE), dim=1), rev=True)[:, -c_s:, :, :]
             R_loss_ = criterion(rev_secret_, secret_list[0])
             R_diff_ = (rev_secret_ - secret_list[0]).abs().mean() * 255
@@ -464,7 +462,11 @@ def test(data_loader_cover, data_loader_secret, HRnet, Enet, criterion,\
     batch_size = opt.batch_size
     
     if mode == 'test':
-        from lpips import LPIPS
+        try:
+            from lpips import LPIPS
+        except ModuleNotFoundError:
+            os.system("pip install lpips")
+            from lpips import LPIPS
         loss_fn_alex = LPIPS(net='alex')
 
     print("\n#### %s begin ####" % mode)

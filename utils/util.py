@@ -393,6 +393,5 @@ def create_dirs(test=opt.test):
         else:
             if not os.path.exists(opt.test_pics_save_dir):
                 os.makedirs(opt.test_pics_save_dir)
-            save_options(test=True)
     except OSError:
         print("XXXXXXXX mkdir failed XXXXXXXX")

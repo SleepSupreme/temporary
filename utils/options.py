@@ -53,7 +53,6 @@ parser.add_argument('--fill_zeros', action='store_true', help='reserve excess ch
 parser.add_argument('--invertible', action='store_true', help='use invertible network or not')
 parser.add_argument('--num_inv', type=int, default=4, help='number of invertible blocks')
 parser.add_argument('--num_sub', type=int, default=3, help='number of sub-blocks in one invertible block')
-parser.add_argument('--btype', type=str, default='dense', help='block type of invertible network [dense]')
 
 # training parameters
 parser.add_argument('--epochs', type=int, default=120, help='epochs for training')
@@ -98,6 +97,8 @@ if opt.continue_train:
 if opt.test:
     opt.checkpoint_name = opt.exper_name
     opt.generation_type = 'random'
+else:
+    assert opt.modified_bits == 0, "Do not modify true key in training mode"
 
 if opt.checkpoint_name != '':  # including opt.test==True and opt.continue_train==True
     _cdir = opt.root +  '/sdh/exper_info/' + opt.checkpoint_name
@@ -107,17 +108,14 @@ if opt.checkpoint_name != '':  # including opt.test==True and opt.continue_train
 if opt.generation_type == 'custom':
     assert opt.fake_key != '', "A custom fake key should be given with the custom generation type!"
 
-if not opt.test:
-    assert opt.modified_bits == 0, "Do not modify true key in training mode"
-
 if opt.cover_dependent:
     opt.redundance = -1
 
 if opt.invertible:
-    assert opt.cover_dependent and (not opt.without_key), "ISN should be cover-dependent or with-key"
+    assert opt.cover_dependent and opt.without_key, "ISN should be cover-dependent and without-key"
     assert opt.channel_cover == opt.channel_secret, "Channel of cover and secret images should be the same in ISN"
+    opt.lr = 0.0002
     opt.lr_policy = 'fixed'
-    opt.generation_type = 'random'
 
 # default path
 opt.dataset_dir = opt.root + '/dataset'
