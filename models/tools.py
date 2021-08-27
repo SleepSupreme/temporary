@@ -342,6 +342,8 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
 
             if opt.shuffle_secret:
                 secret = shuffle_pix(secret)
+            if opt.noise_secret:
+                secret = torch.rand(secret.shape)
 
             cover, container, secret_list, rev_secret_list, rev_secret_,\
                 H_loss, R_loss, R_loss_, H_diff, R_diff, R_diff_, count_diff\
@@ -488,6 +490,8 @@ def test(data_loader_cover, data_loader_secret, HRnet, Enet, criterion,\
     for i, (cover, secret) in enumerate(data_loader, start=1):
         if opt.shuffle_secret:
             secret = shuffle_pix(secret)
+        if opt.noise_secret:
+            secret = torch.rand(secret.shape)
 
         cover, container, secret_list, rev_secret_list, rev_secret_,\
             H_loss, R_loss, R_loss_, H_diff, R_diff, R_diff_, count_diff\
