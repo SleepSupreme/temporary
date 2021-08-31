@@ -106,8 +106,8 @@ def get_scheduler(optimizer):
     elif opt.lr_policy == 'plateau':
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5)
     elif opt.lr_policy == 'cosine':
-        T_max_epoch = 20  # 2 * T_max_epoch == period of the cosine scheduler
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max_epoch, eta_min=0)
+        T_max_epoch = opt.epochs  # 2 * T_max_epoch == period of the cosine scheduler
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max_epoch, eta_min=1e-5)
     else:
         raise NotImplementedError('learning rate policy [%s] is not implemented' % opt.lr_policy)
     return scheduler
