@@ -7,7 +7,8 @@ from utils.util import *
 from .networks import *
 
 
-def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, cover_dependent=opt.cover_dependent, without_key=opt.without_key, fill_zeros=opt.fill_zeros):
+def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, deepsteg=opt.deepsteg,
+            cover_dependent=opt.cover_dependent, without_key=opt.without_key, fill_zeros=opt.fill_zeros):
     """According to options return several structured networks: hiding, reveal and encoding net."""
     if not invertible:
         if cover_dependent:
@@ -36,6 +37,11 @@ def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, cover_
                 norm_type=opt.norm_type,
                 output_function=output_function_H
             )
+        elif htype == 'hidingnet':
+            Hnet = HidingNet(
+                input_nc=opt.channel_cover+7,
+                output_nc=opt.channel_cover
+            )
         else:
             raise NotImplementedError('Hiding network structure [%s] is not found!' % htype)
 
@@ -46,11 +52,17 @@ def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, cover_
                 norm_type=opt.norm_type,
                 output_function='sigmoid'
             )
+        elif rtype == 'revealnet':
+            Rnet = RevealNet(
+                input_nc=opt.channel_cover,
+                output_nc=opt.channel_cover
+            )
         else:
             raise NotImplementedError('Reveal network structure [%s] is not found!' % rtype)
 
-        Hnet.apply(weights_init)
-        Rnet.apply(weights_init)
+        if not deepsteg:
+            Hnet.apply(weights_init)
+            Rnet.apply(weights_init)
         Hnet = torch.nn.DataParallel(Hnet).to(device)
         Rnet = torch.nn.DataParallel(Rnet).to(device)
         HRnet = nn.ModuleList([Hnet, Rnet])
@@ -65,7 +77,10 @@ def get_nets(htype=opt.htype, rtype=opt.rtype, invertible=opt.invertible, cover_
         # weights are already initialized
         HRnet = torch.nn.DataParallel(HRnet).to(device)
 
-    Enet = EncodingNet(opt.image_size, opt.channel_key, opt.redundance, opt.batch_size)
+    if deepsteg:
+        Enet = PrepNet(input_nc=opt.channel_secret*opt.num_secrets, output_nc=7)
+    else:
+        Enet = EncodingNet(opt.image_size, opt.channel_key, opt.redundance, opt.batch_size)
     Enet.apply(weights_init)
     Enet = torch.nn.DataParallel(Enet).to(device)
     return HRnet, Enet
@@ -114,7 +129,7 @@ def get_scheduler(optimizer):
 
 
 def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
-                modified_bits=opt.modified_bits, invertible=opt.invertible, cover_dependent=opt.cover_dependent,
+                modified_bits=opt.modified_bits, invertible=opt.invertible, deepsteg=opt.deepsteg, cover_dependent=opt.cover_dependent,
                 without_key=opt.without_key, key=opt.key, generation_type=opt.generation_type, fake_key=opt.fake_key):
     """Forward propagation for hiding and reveal network and calculate losses and APD.
     
@@ -127,6 +142,7 @@ def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
         epoch (int/None)       -- epoch number
         modidied_bits (int)    -- numbers of modified bits on the true key
         invertible (bool)      -- use invertible network or not
+        deepsteg (bool)        -- use DeepSteg (NeurIPS2017) or not
         cover_dependent (bool) -- cover-dependent deep hiding or not
         without_key (bool)     -- hiding data without key or not
         key (str)              -- custom true key or a null string
@@ -189,7 +205,7 @@ def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
             encode_key_list.append(Enet(k))
         encode_fake_key = Enet(fake_key)
 
-    if not invertible:
+    if (not invertible) and (not deepsteg):
         Hnet, Rnet = HRnet[0], HRnet[1]
         # hiding net
         if cover_dependent:
@@ -242,6 +258,28 @@ def forward_pass(cover, secret, HRnet, Enet, criterion, epoch=None,
             R_loss_ = criterion(rev_secret_, torch.zeros(rev_secret_.shape).to(device))
             R_diff_ = rev_secret_.abs().mean() * 255
     
+    elif deepsteg:  # DeepSteg (NeurIPS2017)
+        Hnet, Rnet = HRnet[0], HRnet[1]
+        # preparation net
+        P_input = secret_list[0]
+        for i in range(1, opt.num_secrets):
+            P_input = torch.cat((P_input, secret_list[i]), dim=1)
+        P_output = Enet(P_input)
+
+        # hiding net
+        H_input = torch.cat((cover, P_output), dim=1)
+        container = Hnet(H_input)
+
+        H_loss, R_loss, R_loss_ = criterion(container, cover), 0.0, 0.0
+        rev_secret_, R_loss_, R_diff_ = None, 0, 0
+
+        # reveal net
+        R_output = Rnet(container)
+        for i in range(opt.num_secrets):
+            rev_secret_list.append(R_output[:, i*c_s:(i+1)*c_s, :, :])
+            R_loss += criterion(secret_list[i], rev_secret_list[i])
+        R_loss /= opt.num_secrets
+
     else:  # invertible network
         HR_input = cover
         for i in range(opt.num_secrets):
@@ -437,7 +475,7 @@ def train(train_loader_cover, train_loader_secret, val_loader_cover, val_loader_
             save_dict['R_state_dict'] = HRnet[1].state_dict()
         else:
             save_dict['I_state_dict'] = HRnet.state_dict()
-        if opt.redundance != 1:
+        if opt.redundance != -1:
             save_dict['E_state_dict'] = Enet.state_dict()
         save_checkpoint(save_dict, is_best)
 

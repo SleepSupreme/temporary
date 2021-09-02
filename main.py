@@ -35,8 +35,10 @@ def main():
         params = list(HRnet.parameters())
     if opt.redundance != -1:
         params += list(Enet.parameters())
-    if not opt.invertible:
+    if (not opt.invertible) and (not opt.deepsteg):
         optimizer = optim.Adam(params, lr=opt.lr, betas=(0.5, 0.999))
+    elif opt.deepsteg:
+        optimizer = optim.Adam(params, lr=opt.lr, betas=(0.9, 0.999))
     else:
         optimizer = optim.Adamax(params, lr=opt.lr, betas=(0.9, 0.999))
     scheduler = get_scheduler(optimizer)

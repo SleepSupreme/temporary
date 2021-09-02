@@ -1,3 +1,4 @@
+from operator import __add__
 import functools
 import torch
 from torch import nn
@@ -295,3 +296,86 @@ class InvHidingNet(nn.Module):
             for m in reversed(self.model_list):
                 output = m.forward(X, rev)
         return output
+
+
+class Conv2dSamePadding(nn.Conv2d):
+    def __init__(self,*args,**kwargs):
+        super(Conv2dSamePadding, self).__init__(*args, **kwargs)
+        self.zero_pad_2d = nn.ZeroPad2d(
+            functools.reduce(
+                __add__,
+                [(k//2 + (k - 2*(k//2)) - 1, k//2) for k in self.kernel_size[::-1]]
+            )
+        )
+
+    def forward(self, x):
+        return  self._conv_forward(self.zero_pad_2d(x), self.weight, self.bias)
+
+
+class PrepNet(nn.Module):
+    """Preparation network in DeepSteg."""
+    def __init__(self, input_nc=3, output_nc=7):
+        super(PrepNet, self).__init__()
+        self.conv1 = Conv2dSamePadding(input_nc, 50, 4, 1)
+        self.conv2 = Conv2dSamePadding(50, 50, 4, 1)
+        self.conv3 = Conv2dSamePadding(50, 50, 4, 1)
+        self.conv4 = Conv2dSamePadding(50, 30, 2, 1)
+        self.conv5 = Conv2dSamePadding(30, output_nc, 2, 1)
+        self.relu = nn.ReLU()
+        self.tanh = nn.Tanh()
+
+        init_inv_weights([self.conv1, self.conv2, self.conv3, self.conv4, self.conv5], 0.1, False)
+
+    def forward(self, X): 
+        X1 = self.relu(self.conv1(X))
+        X2 = self.relu(self.conv2(X1))
+        X3 = self.relu(self.conv3(X2))
+        X4 = self.relu(self.conv4(X3))
+        X5 = self.tanh(self.conv5(X4))
+        return X5
+
+
+class HidingNet(nn.Module):
+    """Hiding network in DeepSteg."""
+    def __init__(self, input_nc=10, output_nc=3):
+        super(HidingNet, self).__init__()
+        self.conv1 = Conv2dSamePadding(input_nc, 50, 4, 1)
+        self.conv2 = Conv2dSamePadding(50, 50, 4, 1)
+        self.conv3 = Conv2dSamePadding(50, 50, 4, 1)
+        self.conv4 = Conv2dSamePadding(50, 50, 4, 1)
+        self.conv5 = Conv2dSamePadding(50, 30, 2, 1)
+        self.conv6 = Conv2dSamePadding(30, output_nc, 2, 1)
+        self.relu = nn.ReLU()
+        self.tanh = nn.Tanh()
+
+        init_inv_weights([self.conv1, self.conv2, self.conv3, self.conv4, self.conv5, self.conv6], 0.1, False)
+
+    def forward(self, X):
+        X1 = self.relu(self.conv1(X))
+        X2 = self.relu(self.conv2(X1))
+        X3 = self.relu(self.conv3(X2))
+        X4 = self.relu(self.conv4(X3))
+        X5 = self.relu(self.conv5(X4))
+        X6 = self.tanh(self.conv6(X5))
+        return X6
+
+
+class RevealNet(nn.Module):
+    """Reveal network in DeepSteg."""
+    def __init__(self, input_nc=3, output_nc=3):
+        super(RevealNet, self).__init__()
+        self.conv1 = Conv2dSamePadding(input_nc, 100, 4, 1)
+        self.conv2 = Conv2dSamePadding(100, 100, 4, 1)
+        self.conv3 = Conv2dSamePadding(100, 50, 4, 1)
+        self.conv4 = Conv2dSamePadding(50, output_nc, 2, 1)
+        self.relu = nn.ReLU()
+        self.tanh = nn.Tanh()
+
+        init_inv_weights([self.conv1, self.conv2, self.conv3, self.conv4], 0.1, False)
+
+    def forward(self, X):
+        X1 = self.relu(self.conv1(X))
+        X2 = self.relu(self.conv2(X1))
+        X3 = self.relu(self.conv3(X2))
+        X4 = self.tanh(self.conv4(X3))
+        return X4

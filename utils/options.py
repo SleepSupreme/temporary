@@ -53,6 +53,7 @@ parser.add_argument('--fill_zeros', action='store_true', help='reserve excess ch
 parser.add_argument('--invertible', action='store_true', help='use invertible network or not')
 parser.add_argument('--num_inv', type=int, default=4, help='number of invertible blocks')
 parser.add_argument('--num_sub', type=int, default=3, help='number of sub-blocks in one invertible block')
+parser.add_argument('--deepsteg', action='store_true', help='train DeepSteg (NeurIPS2017) or not')
 
 # training parameters
 parser.add_argument('--epochs', type=int, default=80, help='epochs for training')
@@ -116,6 +117,13 @@ if opt.invertible:
     assert opt.cover_dependent and opt.without_key, "ISN should be cover-dependent and without-key"
     assert opt.channel_cover == opt.channel_secret, "Channel of cover and secret images should be the same in ISN"
     opt.lr = 0.0002
+    opt.lr_policy = 'fixed'
+
+if opt.deepsteg:
+    opt.htype = 'hidingnet'
+    opt.rtype = 'revealnet'
+    opt.cover_dependent = True
+    opt.without_key = True
     opt.lr_policy = 'fixed'
 
 # default path
